@@ -1,140 +1,135 @@
-var ref = require('ref');
-var ffi = require('ffi');
-var fs = require('fs');
-var assert = require('assert');
-var _ = require('lodash');
-var wav = require('wav');
+const fs = require('fs');
+const assert = require('assert');
+const wav = require('wav');
+const _ = require('lodash');
+const protobuf = require('protobufjs');
+const AWS = require('aws-sdk');
+const KinesisReadable = require('kinesis-readable');
 
-var StructType = require('ref-struct');
-var ArrayType = require('ref-array');
-var CharArray = ArrayType(ref.types.byte);
-var FloatArray = ArrayType(ref.types.float);
-var ShortArray = ArrayType(ref.types.short);
 
-var readImbeData = require('./read-imbe-data');
-var AudioProcessor = require('./process-imbe-audio');
+const settings = require(__dirname + '/../settings');
 
-var FloatPtr = ref.refType(ref.types.float);
-var ShortPtr = ref.refType(ref.types.short);
-var StringPtr = ref.refType(ref.types.CString);
-var IntPtr = ref.refType(ref.types.int);
+const ImbeTransform = require('./process-imbe');
+const ImbeAudioTransform = require('./process-imbe-audio');
 
-var Mbe = ref.types.void;
-var MbePtr = ref.refType(Mbe);
-var MbePtrPtr = ref.refType(MbePtr);
+let kinesis;
+let BaseMessage;
+let P25ChannelId;
+let P25DataUnit;
 
-var uvQuality = 3; // TODO: From default params in dsd_main.c
-
-// struct mbe_parameters
-// {
-//   float w0;
-//   int L;
-//   int K;
-//   int Vl[57];
-//   float Ml[57];
-//   float log2Ml[57];
-//   float PHIl[57];
-//   float PSIl[57];
-//   float gamma;
-//   int un;
-//   int repeat;
-// };
-
-// typedef struct mbe_parameters mbe_parms;
-var MbeParamsType = StructType({
-  w0: ref.types.float,
-  L: ref.types.int,
-  K: ref.types.int,
-  Vl: ArrayType(ref.types.int, 57),
-  Ml: ArrayType(ref.types.float, 57),
-  log2Ml: ArrayType(ref.types.float, 57),
-  PHIl: ArrayType(ref.types.float, 57),
-  PSIl: ArrayType(ref.types.float, 57),
-  gamma: ref.types.float,
-  un: ref.types.int,
-  repeat: ref.types.int
-});
-
-var MbeParamsPtr = ref.refType(MbeParamsType);
-
-// void mbe_printVersion (char *str);
-// void mbe_initMbeParms (mbe_parms * cur_mp, mbe_parms * prev_mp, mbe_parms * prev_mp_enhanced);
-// void mbe_processImbe4400Dataf (float *aout_buf, int *errs, int *errs2, char *err_str, char imbe_d[88], mbe_parms * cur_mp, mbe_parms * prev_mp, mbe_parms * prev_mp_enhanced, int uvquality);
-// void mbe_synthesizeSpeechf (float *aout_buf, mbe_parms * cur_mp, mbe_parms * prev_mp, int uvquality);
-// void mbe_synthesizeSpeech (short *aout_buf, mbe_parms * cur_mp, mbe_parms * prev_mp, int uvquality);
-// void mbe_floattoshort (float *float_buf, short *aout_buf);
-// void mbe_moveMbeParms (mbe_parms * cur_mp, mbe_parms * prev_mp);
-var libmbe = ffi.Library(__dirname + '/../include/mbelib/build/libmbe', {
-  'mbe_printVersion': [ 'void', [ 'string' ] ],
-  'mbe_initMbeParms': [ 'void', [ MbeParamsPtr, MbeParamsPtr, MbeParamsPtr ] ],
-  'mbe_processImbe4400Dataf': [ 'void', [ FloatPtr, IntPtr, IntPtr, 'string', CharArray, MbeParamsPtr, MbeParamsPtr, MbeParamsPtr, 'int' ] ],
-  'mbe_processImbe4400Data': [ 'void', [ ShortPtr, IntPtr, IntPtr, 'string', CharArray, MbeParamsPtr, MbeParamsPtr, MbeParamsPtr, 'int' ] ],
-});
-
-var versionPtr = ref.alloc('string');
-libmbe.mbe_printVersion(versionPtr);
-
-var version = ref.readCString(versionPtr, 0);
-console.log(version);
-
-var fileData = fs.readFileSync(__dirname + '/../samples/test2-in.imb');
-
-var fileType = fileData.slice(0, 4).toString('ascii');
-assert(fileType === '.imb');
-
-var curMbeParams = ref.alloc(MbeParamsType);
-var prevMbeParams = ref.alloc(MbeParamsType);
-var prevMbeParamsEnhanced = ref.alloc(MbeParamsType);
-
-libmbe.mbe_initMbeParms(curMbeParams, prevMbeParams, prevMbeParamsEnhanced);
-
-var wavWriter = new wav.FileWriter(__dirname + '/../samples/test2-out.wav', {
+const wavWriter = new wav.FileWriter(__dirname + '/../samples/test3-out.wav', {
   sampleRate: 8000,
   channels: 1
 });
 
-var audioProcessor = new AudioProcessor();
+const imbeTransform = new ImbeTransform();
+const imbeAudioTransform = new ImbeAudioTransform();
 
-var chunks = _.chunk(fileData.slice(4), 12);
-var count = 0;
-var audioOutBuffer = Buffer.alloc(640);
+imbeTransform
+  .pipe(imbeAudioTransform)
+  .pipe(wavWriter);
 
-// chunks = [chunks[0]]; // TODO REMOVE FOR MORE THAN ONE LOOP
-_.each(chunks, function(chunk) {
+const setupAws = function () {
+  const awsConfig = {
+    accessKeyId: settings.aws.accessKeyId,
+    secretAccessKey: settings.aws.secretAccessKey,
+    region: settings.aws.region,
+    params: {
+      StreamName: settings.aws.streamName
+    }
+  };
 
-  var errs1Ptr = ref.alloc('int', chunk[0]);
-  var errs2Ptr = ref.alloc('int', chunk[0]);
-  var errStringPtr = ref.alloc('string');
+  kinesis = new AWS.Kinesis(awsConfig);
+  const readable = KinesisReadable(kinesis, {
+    iterator: 'LATEST'
+  });
 
-  var imbeData = readImbeData(chunk.slice(1));
+  readable
+    // 'data' events will trigger for a set of records in the stream 
+    .on('data', function(records) {
+      _.each(records, function(record) {
+        if (typeof record.Data !== 'undefined') {
 
-  console.log('imbeData');
-  console.log(imbeData.toString('hex'));
-  console.log('errs1:');
-  console.log(errs1Ptr.deref());
-  console.log('errs2:');
-  console.log(errs2Ptr.deref());
+          let data = record.Data;
 
-  libmbe.mbe_processImbe4400Dataf(audioOutBuffer, errs1Ptr, errs2Ptr, errStringPtr, imbeData, curMbeParams, prevMbeParams, prevMbeParamsEnhanced, uvQuality);
+          while (data.length > 4) {
+            let size = Buffer.from(data.slice(0, 4)).readUInt32BE(0);
 
-  var errorString = ref.readCString(errStringPtr, 0);
-  console.log('errorString:');
-  console.log(errorString);
-  console.log('audioOutBuffer');
+            data = data.slice(4);
 
-  let fixedAudioOut = audioProcessor.processBatch(audioOutBuffer); 
-
-  console.log('fixedAudioOut');
-  console.log('fixedAudioOut length = ' + fixedAudioOut.length);
-  console.log('fixedAudioOut buffer length = ' + fixedAudioOut.buffer.length);
-  console.log(fixedAudioOut.buffer);
-  console.log(audioOutBuffer.toString('hex'));
+            let message = BaseMessage.decode(data.slice(0, size)).asJSON({
+              enum: String
+            });
 
 
-  wavWriter.write(fixedAudioOut.buffer);
-  count++;
-});
+            if (message.p25DataUnit.channelId.type === 'TRAFFIC_DIRECT' || 
+                message.p25DataUnit.channelId.type === 'TRAFFIC_GROUP') {
 
-console.log('count = ' + count);
+              console.log(message);
+              console.log('channel ID type = ' + message.p25DataUnit.channelId.type);
+              console.log('bytes length = ' + message.p25DataUnit.bytes.length);
+              // imbeTransform.write(Buffer.from(message.p25DataUnit.bytes));
+            }
 
-wavWriter.end();
+            data = data.slice(size);
+
+          }
+
+          // readable.end();
+        }
+      });
+    })
+    // each time a records are passed downstream, the 'checkpoint' event will provide 
+    // the last sequence number that has been read 
+    .on('checkpoint', function(sequenceNumber) {
+      console.log('--CHECKPOINT--');
+      console.log(sequenceNumber);
+      console.log('--CHECKPOINT--');
+    })
+    .on('error', function(err) {
+      console.error(err);
+      imbeTransform.end();
+      wavWriter.end();
+    })
+    .on('end', function() {
+      console.log('all done!');
+      imbeTransform.end();
+      wavWriter.end();
+    });
+
+};
+
+const readWriteAndDecode = function () {
+
+  let fileData = fs.createReadStream(__dirname + '/../samples/test2-in.imb');
+
+  // let fileType = fileData.slice(0, 4).toString('ascii');
+  // assert(fileType === '.imb');
+
+  // let imbeContents = fileData.slice(4);
+
+  fileData.pipe(imbeTransform);
+
+  // imbeTransform.write(imbeContents);
+
+  // wavWriter.end();
+};
+
+const init = function() {
+
+  protobuf.load(__dirname + '/../proto/p25.proto')
+    .then(function(root) {
+      BaseMessage = root.lookup('p25package.BaseMessage');
+      P25ChannelId = root.lookup('p25package.P25ChannelId');
+      P25DataUnit = root.lookup('p25package.P25DataUnit');
+
+      setupAws();
+    })
+    .catch(function(error) {
+      console.error(error);
+    });
+};
+
+init();
+
+// readWriteAndDecode();

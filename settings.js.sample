@@ -1,0 +1,11 @@
+
+module.exports = {
+  aws: {
+    accessKeyId: '',
+    secretAccessKey: '',
+    region: '',
+    streamName: '',
+    arn: '',
+  }
+};
+
