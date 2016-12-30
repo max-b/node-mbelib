@@ -2,7 +2,7 @@
   "name": "node-mbelib",
   "version": "1.0.0",
   "description": "Native mbelib bindings for Nodejs.",
-  "main": "src/index.js",
+  "main": "./index.js",
   "scripts": {
     "test": "echo \"Error: no test specified\" && exit 1",
     "postinstall": "mkdir -p include/mbelib/build; cd include/mbelib/build; cmake ..; make;"
@@ -25,6 +25,7 @@
   },
   "homepage": "https://github.com/max-b/node-mbelib#readme",
   "dependencies": {
+    "debug": "^2.6.0",
     "ffi": "^2.2.0",
     "kinesis-readable": "^1.0.0",
     "lodash": "^4.17.2",
@@ -33,5 +34,8 @@
     "ref-array": "^1.2.0",
     "ref-struct": "^1.1.0",
     "wav": "^1.0.1"
+  },
+  "devDependencies": {
+    "stream-buffers": "^3.0.1"
   }
 }

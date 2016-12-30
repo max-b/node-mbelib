@@ -1,9 +1,14 @@
+const path = require('path');
 const _ = require('lodash');
 const ref = require('ref');
 const ArrayType = require('ref-array');
 const Transform = require('stream').Transform;
 
 const RingBuffer = require('./ring-buffer');
+
+const moduleName = require('../package.json').name;
+const filename = path.basename(__filename);
+const debug = require('debug')(moduleName)  
 
 const FloatArray = ArrayType(ref.types.float);
 const ShortArray = ArrayType(ref.types.short);
@@ -13,32 +18,32 @@ const maxBufferSize = 25;
 const AudioProcessor = function() {
   this._maxBuffer = new RingBuffer(maxBufferSize);
   this._audioOutGain = initialAudioOutGain;
-  console.log('created audio processor');
   
 };
 
 class ImbeAudioTransform extends Transform {
   constructor(options) {
     super(options);
+    debug('ImbeAudioTranform Constructor', filename);
     this._maxBuffer = new RingBuffer(maxBufferSize);
     this._audioOutGain = initialAudioOutGain;
     this._audioOutBuffer = new ShortArray(160);
     this._audioInBuffer = new FloatArray(640);
-    console.log('created ImbeAudioTransform stream');
   }
 
   _transform(chunk, encoding, callback) {
-    console.log('ImbeAudioTransform called _transform with chunk length = ' + chunk.length);
+    debug('_transform called with chunk length = ', chunk.length, filename);
     this._audioInBuffer.buffer.fill(chunk);
 
     this.fixGain();
     this.floatToShort();
 
-    console.log('pushing audiooutbuffer w/ length = ' + this._audioOutBuffer.buffer.length);
-
     this.push(this._audioOutBuffer.buffer);
+
+    debugger;
     callback();
   }
+
 
   floatToShort () {
     _.each(this._audioInBuffer, (val, index) => {
