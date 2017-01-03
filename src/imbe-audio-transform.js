@@ -27,20 +27,20 @@ class ImbeAudioTransform extends Transform {
     debug('ImbeAudioTranform Constructor', filename);
     this._maxBuffer = new RingBuffer(maxBufferSize);
     this._audioOutGain = initialAudioOutGain;
-    this._audioOutBuffer = new ShortArray(160);
-    this._audioInBuffer = new FloatArray(640);
   }
 
   _transform(chunk, encoding, callback) {
     debug('_transform called with chunk length = ', chunk.length, filename);
-    this._audioInBuffer.buffer.fill(chunk);
+    this._audioInBuffer = new FloatArray(chunk);
 
     this.fixGain();
+
+    this._audioOutBuffer = new ShortArray(160);
+
     this.floatToShort();
 
     this.push(this._audioOutBuffer.buffer);
 
-    debugger;
     callback();
   }
 
@@ -56,7 +56,7 @@ class ImbeAudioTransform extends Transform {
     let gainFactor;
     let gainDelta;
 
-    _.each(this._audioInBuffer, function(val) {
+    _.each(this._audioInBuffer, (val) => {
       val = Math.abs(val);
       if (val > max) {
         max = val;

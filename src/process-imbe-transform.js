@@ -55,12 +55,12 @@ class ProcessImbeTransform extends Transform {
   constructor(options) {
     super(options);
     this._accumulator = Buffer(0);
+    this._initParams();
     debug('ProcessImbeTranform Constructor', filename);
   }
 
   _transform(inputData, encoding, callback) {
     debug('transform called with inputData length = ' + inputData.length, filename);
-    const { audioOutBuffer, mbeParams } = this._initParams();
 
     if (this._accumulator.length > 0) {
       debug('this._accumulator is non-zero. Has length = ' + this._accumulator.length, filename);
@@ -79,7 +79,7 @@ class ProcessImbeTransform extends Transform {
         debug('Setting accumulator with length: ' + this._accumulator.length, filename);
         return;
       }
-      this._processImbe(chunk, audioOutBuffer, mbeParams);
+      this._processImbe(chunk);
 
     });
      
@@ -87,40 +87,45 @@ class ProcessImbeTransform extends Transform {
   }
 
   _initParams() {
-    const mbeParams = {
+    this._mbeParams = {
       curMbeParams: ref.alloc(MbeParamsType),
       prevMbeParams: ref.alloc(MbeParamsType),
       prevMbeParamsEnhanced: ref.alloc(MbeParamsType),
     };
 
-    libmbe.mbe_initMbeParms(mbeParams.curMbeParams, mbeParams.prevMbeParams, mbeParams.prevMbeParamsEnhanced);
+    libmbe.mbe_initMbeParms(this._mbeParams.curMbeParams, this._mbeParams.prevMbeParams, this._mbeParams.prevMbeParamsEnhanced);
 
-    return {
-      audioOutBuffer: Buffer.alloc(640),
-      mbeParams: mbeParams,
-    };
+    this._audioOutBuffer = Buffer.alloc(640);
   }
 
   _flush(callback) {
-    if (this.accumulator.length === 12) {
+    if (this._accumulator.length === 12) {
 
-      const { audioOutBuffer, mbeParams } = this._initParams();
-      this._processImbe(this.accumulator, audioOutBuffer, mbeParams);
+      this._processImbe(this._accumulator);
       this._accumulator = Buffer.alloc(0);
-    } else {
-      debug('Incorrect size chunk at end of transform stream accumulator', filename);
+    } else if (this._accumulator.length !== 0) {
+      debug('Incorrect size chunk at end of transform stream accumulator. this._accumulator.length = ' + this._accumulator.length, filename);
     }
 
     callback();
   }
 
-  _processImbe(chunk, audioOutBuffer, mbeParams) {
+  _processImbe(chunk) {
     const imbeData = readImbeData(chunk.slice(1));
     const errs1Ptr = ref.alloc('int', chunk[0]);
     const errs2Ptr = ref.alloc('int', chunk[0]);
     const errStringPtr = ref.alloc('string');
 
-    libmbe.mbe_processImbe4400Dataf(audioOutBuffer, errs1Ptr, errs2Ptr, errStringPtr, imbeData, mbeParams.curMbeParams, mbeParams.prevMbeParams, mbeParams.prevMbeParamsEnhanced, uvQuality);
+    libmbe.mbe_processImbe4400Dataf(this._audioOutBuffer, 
+      errs1Ptr, 
+      errs2Ptr, 
+      errStringPtr, 
+      imbeData, 
+      this._mbeParams.curMbeParams, 
+      this._mbeParams.prevMbeParams, 
+      this._mbeParams.prevMbeParamsEnhanced, 
+      uvQuality
+    );
 
     const errorString = ref.readCString(errStringPtr, 0);
     if (errorString !== '') {
@@ -133,7 +138,7 @@ class ProcessImbeTransform extends Transform {
       debug('error2: ' + errs2Ptr.deref(), filename);
     }
 
-    this.push(audioOutBuffer);
+    this.push(this._audioOutBuffer);
   }
 
 }
